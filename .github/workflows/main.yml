@@ -63,9 +63,10 @@ jobs:
       - name: 钉钉签到通知
         if: always()
         uses: leafney/dingtalk-action@v1
+        env:
+          DINGTALK_ACCESS_TOKEN: ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
         with:
-          access_token: ${{ secrets.DINGTALK_WEBHOOK }}
-          secret: ${{ secrets.DINGTALK_SECRET }}
           msgtype: markdown
           title: '签到通知'
           text: |
