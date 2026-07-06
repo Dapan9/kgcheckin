@@ -62,7 +62,7 @@ jobs:
         
       - name: 钉钉签到通知
         if: always()
-        uses: leafney/dingtalk-action@v2
+        uses: leafney/dingtalk-action@v1
         with:
           access_token: ${{ secrets.DINGTALK_WEBHOOK }}
           secret: ${{ secrets.DINGTALK_SECRET }}
