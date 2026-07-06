@@ -12,12 +12,14 @@ jobs:
     steps:
       - name: 检出仓库
         uses: actions/checkout@v6
+        
       - name: 创建node
         uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: 'npm'
           cache-dependency-path: ./api/package-lock.json
+          
       - name: 🔧 检查GitHub CLI
         run: |
           if ! command -v gh >/dev/null 2>&1; then
@@ -28,6 +30,7 @@ jobs:
             sudo apt install gh -y
           fi
           gh --version
+          
       - name: Cache node_modules in api directory
         id: cache-npm
         uses: actions/cache@v5
@@ -36,12 +39,60 @@ jobs:
           key: ${{ runner.os }}-node-${{ hashFiles('./api/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-node-
+            
       - name: 安装依赖
         run: npm run install
         if: ${{ steps.cache-npm.outputs.cache-hit != 'true' }}
+        
+      # ========== 改动1：签到步骤增加了 id、输出捕获和 continue-on-error ==========
       - name: 签到
-        run: npm run main
+        id: signin  # 【新增】添加id，方便后续步骤引用这个步骤的状态
+        run: |
+          # 【修改】将原来的 npm run main 改为用 if 判断，捕获执行结果
+          if npm run main; then
+            # 【新增】签到成功时，设置输出变量
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "message=签到成功 ✅" >> $GITHUB_OUTPUT
+          else
+            # 【新增】签到失败时，设置输出变量
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "message=签到失败 ❌" >> $GITHUB_OUTPUT
+          fi
         env:
           USERINFO: ${{ secrets.USERINFO }}
           PAT: ${{ secrets.PAT }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+        continue-on-error: true  # 【新增】即使签到失败，也继续执行后续步骤，确保通知能发送出去
+        
+      # ========== 改动2：这是新增的整个步骤，用于发送钉钉通知 ==========
+      - name: 钉钉签到通知  # 【新增】钉钉通知步骤
+        if: always()  # 【新增】无论签到成功还是失败都执行
+        env:  # 【新增】从GitHub Secrets读取钉钉配置
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
+        run: |  # 【新增】发送钉钉消息的脚本
+          # 获取当前北京时间
+          CURRENT_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
+          
+          # 从签到步骤获取状态
+          SIGN_STATUS="${{ steps.signin.outputs.message }}"
+          
+          # 生成钉钉签名（加签模式需要）
+          TIMESTAMP=$(date +%s)000
+          SIGN_RAW="$TIMESTAMP\n$DINGTALK_SECRET"
+          SIGN=$(echo -e "$SIGN_RAW" | openssl sha256 -hmac "$DINGTALK_SECRET" -binary | base64)
+          
+          # 发送钉钉消息
+          curl -X POST "$DINGTALK_WEBHOOK&timestamp=$TIMESTAMP&sign=$SIGN" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "msgtype": "markdown",
+              "markdown": {
+                "title": "签到通知",
+                "text": "## 📢 签到通知\n\n### '"$SIGN_STATUS"'\n\n**签到时间**: '"$CURRENT_TIME"'\n\n**仓库**: ['"${{ github.repository }}"']('"${{ github.server_url }}/${{ github.repository }}"')\n\n**运行详情**: [查看Actions日志]('"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"')\n\n---\n*通知由 GitHub Actions 自动发送*"
+              },
+              "at": {
+                "isAtAll": false
+              }
+            }'
+      # ========== 改动结束 ==========
