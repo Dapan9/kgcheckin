@@ -60,26 +60,49 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         continue-on-error: true
         
-      # ========== 使用 leafney/dingtalk-action @ v1 ==========
       - name: 钉钉签到通知
         if: always()
-        uses: leafney/dingtalk-action@v1
         env:
-          DINGTALK_ACCESS_TOKEN: ${{ secrets.DINGTALK_ACCESS_TOKEN }}  # 注意：这里是 Token，不是完整 URL
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
           DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
-        with:
-          msgtype: markdown
-          title: '签到通知'
-          text: |
-            ## 📢 签到通知
-            
-            ### ${{ steps.signin.outputs.message }}
-            
-            **签到时间**: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
-            
-            **仓库**: ${{ github.repository }}
-            
-            **运行详情**: [查看Actions日志](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-            
-            ---
-            *通知由 GitHub Actions 自动发送*
+        run: |
+          # 获取当前北京时间
+          CURRENT_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
+          
+          # 获取签到状态
+          SIGN_STATUS="${{ steps.signin.outputs.message }}"
+          
+          # 生成钉钉签名
+          TIMESTAMP=$(date +%s%3N)
+          SIGN=$(echo -n "$TIMESTAMP"$'\n'"$DINGTALK_SECRET" | openssl dgst -sha256 -hmac "$DINGTALK_SECRET" -binary | base64)
+          # URL编码签名
+          SIGN_ENCODED=$(echo -n "$SIGN" | od -An -tx1 | tr ' ' '%' | tr -d '\n')
+          
+          # 构建消息内容
+          MESSAGE=$(cat <<EOF
+          {
+            "msgtype": "markdown",
+            "markdown": {
+              "title": "签到通知",
+              "text": "## 📢 签到通知\n\n### $SIGN_STATUS\n\n**签到时间**: $CURRENT_TIME\n\n**仓库**: [${{ github.repository }}](${{ github.server_url }}/${{ github.repository }})\n\n**运行详情**: [查看Actions日志](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\n\n---\n*通知由 GitHub Actions 自动发送*"
+            },
+            "at": {
+              "isAtAll": false
+            }
+          }
+          EOF
+          )
+          
+          # 发送钉钉消息
+          RESPONSE=$(curl -s -X POST "$DINGTALK_WEBHOOK&timestamp=$TIMESTAMP&sign=$SIGN_ENCODED" \
+            -H "Content-Type: application/json" \
+            -d "$MESSAGE")
+          
+          # 检查响应
+          echo "钉钉响应: $RESPONSE"
+          if echo "$RESPONSE" | grep -q '"errcode":0'; then
+            echo "✅ 钉钉通知发送成功"
+          else
+            echo "❌ 钉钉通知发送失败"
+            exit 1
+          fi
