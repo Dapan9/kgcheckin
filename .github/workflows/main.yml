@@ -47,13 +47,57 @@ jobs:
       - name: 签到
         id: signin
         run: |
-          if npm run main; then
+          # 执行签到并捕获输出
+          OUTPUT=$(npm run main 2>&1)
+          EXIT_CODE=$?
+          
+          # 保存完整输出
+          echo "output<<EOF" >> $GITHUB_OUTPUT
+          echo "$OUTPUT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          # 提取关键信息
+          echo "$OUTPUT" > signin.log
+          
+          # 提取账号
+          ACCOUNT=$(grep -o '账号 [^*]*' signin.log | head -1 | sed 's/账号 //' || echo "未知账号")
+          
+          # 提取VIP到期时间
+          VIP_DATE=$(grep -o 'VIP到期时间：[0-9-]* [0-9:]*' signin.log | head -1 | sed 's/VIP到期时间：//' || echo "未知")
+          
+          # 提取日期
+          TODAY=$(grep -o '今天是：[0-9-]*' signin.log | head -1 | sed 's/今天是：//' || echo "未知")
+          
+          # 判断签到状态 - 多种成功标志
+          if echo "$OUTPUT" | grep -q "领取成功\|今日已领取\|已领取" || [ $EXIT_CODE -eq 0 ]; then
             echo "status=success" >> $GITHUB_OUTPUT
-            echo "message=签到成功 ✅" >> $GITHUB_OUTPUT
+            echo "message=✅ 签到成功" >> $GITHUB_OUTPUT
           else
             echo "status=failure" >> $GITHUB_OUTPUT
-            echo "message=签到失败 ❌" >> $GITHUB_OUTPUT
+            echo "message=❌ 签到失败" >> $GITHUB_OUTPUT
           fi
+          
+          # 提取领取次数（成功次数）
+          SUCCESS_COUNT=$(echo "$OUTPUT" | grep -c "领取成功" || echo "0")
+          if [ "$SUCCESS_COUNT" -gt 0 ]; then
+            echo "detail=领取成功 $SUCCESS_COUNT 次" >> $GITHUB_OUTPUT
+          elif echo "$OUTPUT" | grep -q "今日已领取"; then
+            echo "detail=今日已领取（重复签到）" >> $GITHUB_OUTPUT
+          elif echo "$OUTPUT" | grep -q "今天次数已用光"; then
+            echo "detail=今日次数已用光" >> $GITHUB_OUTPUT
+          else
+            echo "detail=请查看详情" >> $GITHUB_OUTPUT
+          fi
+          
+          # 保存提取的信息供通知使用
+          echo "account=$ACCOUNT" >> $GITHUB_OUTPUT
+          echo "vip_date=$VIP_DATE" >> $GITHUB_OUTPUT
+          echo "today=$TODAY" >> $GITHUB_OUTPUT
+          
+          # 清理临时文件
+          rm -f signin.log
+          
+          exit $EXIT_CODE
         env:
           USERINFO: ${{ secrets.USERINFO }}
           PAT: ${{ secrets.PAT }}
@@ -69,13 +113,33 @@ jobs:
           # 获取当前北京时间
           CURRENT_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
           
-          # 获取签到状态
+          # 获取签到状态和信息
           SIGN_STATUS="${{ steps.signin.outputs.message }}"
+          SIGN_DETAIL="${{ steps.signin.outputs.detail }}"
+          ACCOUNT="${{ steps.signin.outputs.account }}"
+          VIP_DATE="${{ steps.signin.outputs.vip_date }}"
+          TODAY="${{ steps.signin.outputs.today }}"
+          
+          # 获取完整日志（截取前500字符，避免太长）
+          FULL_LOG="${{ steps.signin.outputs.output }}"
+          if [ ${#FULL_LOG} -gt 500 ]; then
+            FULL_LOG="${FULL_LOG:0:500}..."
+          fi
+          
+          # 构建美观的通知消息
+          if [ "${{ steps.signin.outputs.status }}" == "success" ]; then
+            STATUS_EMOJI="✅"
+            STATUS_TEXT="签到成功"
+            COLOR="#00FF00"
+          else
+            STATUS_EMOJI="❌"
+            STATUS_TEXT="签到失败"
+            COLOR="#FF0000"
+          fi
           
           # 生成钉钉签名
           TIMESTAMP=$(date +%s%3N)
           SIGN=$(echo -n "$TIMESTAMP"$'\n'"$DINGTALK_SECRET" | openssl dgst -sha256 -hmac "$DINGTALK_SECRET" -binary | base64)
-          # URL编码签名
           SIGN_ENCODED=$(echo -n "$SIGN" | od -An -tx1 | tr ' ' '%' | tr -d '\n')
           
           # 构建消息内容
@@ -84,7 +148,7 @@ jobs:
             "msgtype": "markdown",
             "markdown": {
               "title": "签到通知",
-              "text": "## 📢 签到通知\n\n### $SIGN_STATUS\n\n**签到时间**: $CURRENT_TIME\n\n**仓库**: [${{ github.repository }}](${{ github.server_url }}/${{ github.repository }})\n\n**运行详情**: [查看Actions日志](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\n\n---\n*通知由 GitHub Actions 自动发送*"
+              "text": "## 📢 签到通知\n\n### $STATUS_EMOJI $STATUS_TEXT\n\n| 项目 | 信息 |\n|------|------|\n| **账号** | $ACCOUNT |\n| **签到详情** | $SIGN_DETAIL |\n| **签到日期** | $TODAY |\n| **VIP到期时间** | $VIP_DATE |\n| **通知时间** | $CURRENT_TIME |\n\n**运行详情**: [查看Actions日志](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\n\n---\n*通知由 GitHub Actions 自动发送*"
             },
             "at": {
               "isAtAll": false
